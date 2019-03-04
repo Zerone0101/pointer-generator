@@ -207,7 +207,8 @@ def make_html_safe(s):
 
 def rouge_eval(ref_dir, dec_dir):
   """Evaluate the files in ref_dir and dec_dir with pyrouge, returning results_dict"""
-  r = pyrouge.Rouge155()
+  rouge_path = '/home/yuxiaoming/zerone/train_model/local/ROUGE-1.5.5'
+  r = pyrouge.Rouge155(rouge_path)
   r.model_filename_pattern = '#ID#_reference.txt'
   r.system_filename_pattern = '(\d+)_decoded.txt'
   r.model_dir = ref_dir
