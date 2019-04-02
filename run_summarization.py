@@ -29,6 +29,7 @@ from decode import BeamSearchDecoder
 import util
 from tensorflow.python import debug as tf_debug
 
+
 FLAGS = tf.app.flags.FLAGS
 
 # Where to find data
@@ -47,7 +48,7 @@ tf.app.flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be sa
 tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
 tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
 tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
-tf.app.flags.DEFINE_integer('max_enc_steps', 100, 'max timesteps of encoder (max source text tokens)')
+tf.app.flags.DEFINE_integer('max_enc_steps', 150, 'max timesteps of encoder (max source text tokens)')
 tf.app.flags.DEFINE_integer('max_dec_steps', 15, 'max timesteps of decoder (max summary tokens)')
 tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
 tf.app.flags.DEFINE_integer('min_dec_steps', 35, 'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
@@ -72,7 +73,9 @@ tf.app.flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model
 # Debugging. See https://www.tensorflow.org/programmers_guide/debugger
 tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
 
-
+# 添加关键词指导的辅助信息
+tf.app.flags.DEFINE_boolean('use_key_words', False, "Get key words by textrank, use keywords as additional info")
+tf.app.flags.DEFINE_integer('max_key_word_num', 10, 'number of the key words')
 
 def calc_running_avg_loss(loss, running_avg_loss, summary_writer, step, decay=0.99):
   """Calculate the running average loss via exponential decay.
@@ -292,7 +295,7 @@ def main(unused_argv):
     raise Exception("The single_pass flag should only be True in decode mode")
 
   # Make a namedtuple hps, containing the values of the hyperparameters that the model needs
-  hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen']
+  hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen', 'use_key_words', 'max_key_word_num']
   hps_dict = {}
   for key,val in FLAGS.__flags.items(): # for each flag
     if key in hparam_list: # if it's in the list

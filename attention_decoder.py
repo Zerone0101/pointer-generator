@@ -24,10 +24,11 @@ from tensorflow.python.ops import math_ops
 
 # Note: this function is based on tf.contrib.legacy_seq2seq_attention_decoder, which is now outdated.
 # In the future, it would make more sense to write variants on the attention mechanism using the new seq2seq library for tensorflow 1.0: https://www.tensorflow.org/api_guides/python/contrib.seq2seq#Attention
-def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding_mask, cell, initial_state_attention=False, pointer_gen=True, use_coverage=False, prev_coverage=None):
+def attention_decoder(decoder_inputs, key_words_ctx, initial_state, encoder_states, enc_padding_mask, cell, initial_state_attention=False, pointer_gen=True, use_coverage=False, prev_coverage=None):
   """
   Args:
     decoder_inputs: A list of 2D Tensors [batch_size x input_size].
+    key_words_ctx: 2D Tensor[batch_size * cell.state_size]. the keywords are fed one-by-one into the key information guide network
     initial_state: 2D Tensor [batch_size x cell.state_size].
     encoder_states: 3D Tensor [batch_size x attn_length x attn_size].
     enc_padding_mask: 2D Tensor [batch_size x attn_length] containing 1s and 0s; indicates which of the encoder locations are padding (0) or a real token (1).
@@ -68,6 +69,7 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
 
     # Get the weight vectors v and w_c (w_c is for coverage)
     v = variable_scope.get_variable("v", [attention_vec_size])
+
     if use_coverage:
       with variable_scope.variable_scope("coverage"):
         w_c = variable_scope.get_variable("w_c", [1, 1, 1, attention_vec_size])
@@ -93,19 +95,31 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
         decoder_features = linear(decoder_state, attention_vec_size, True) # shape (batch_size, attention_vec_size)
         decoder_features = tf.expand_dims(tf.expand_dims(decoder_features, 1), 1) # reshape to (batch_size, 1, 1, attention_vec_size)
 
+        # TODO... 添加有key_words_ctx的attention计算 e=v^T tanh(W_h h_i + W_s s_t + W_k k)
+        # 使用key_words_ctx
+        if key_words_ctx is not None:
+          # 计算论文中的 W_k k
+          with variable_scope.variable_scope('projection1'):
+            key_words_features = linear(key_words_ctx, attention_vec_size, False)
+
         def masked_attention(e):
           """Take softmax of e then apply enc_padding_mask and re-normalize"""
           attn_dist = nn_ops.softmax(e) # take softmax. shape (batch_size, attn_length)
           attn_dist *= enc_padding_mask # apply mask
           masked_sums = tf.reduce_sum(attn_dist, axis=1) # shape (batch_size)
           return attn_dist / tf.reshape(masked_sums, [-1, 1]) # re-normalize
-
         if use_coverage and coverage is not None: # non-first step of coverage
           # Multiply coverage vector by w_c to get coverage_features.
           coverage_features = nn_ops.conv2d(coverage, w_c, [1, 1, 1, 1], "SAME") # c has shape (batch_size, attn_length, 1, attention_vec_size)
 
           # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
-          e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
+          # e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
+          # TODO... 添加有key_words_ctx
+          # Calculate v^T tanh(W_h h_i + W_s s_t + W_k k + w_c c_i^t + b_attn)
+          if key_words_ctx is not None:
+            e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + key_words_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
+          else:
+            e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + coverage_features), [2, 3])  # shape (batch_size,attn_length)
 
           # Calculate attention distribution
           attn_dist = masked_attention(e)
@@ -114,7 +128,15 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
           coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
         else:
           # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
-          e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features), [2, 3]) # calculate e
+          # e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features), [2, 3]) # calculate e
+
+          # Calculate v^T tanh(W_h h_i + W_s s_t + W_k k + b_attn)
+          # TODO... 添加有key_words_ctx
+          # Calculate v^T tanh(W_h h_i + W_s s_t + W_k k + w_c c_i^t + b_attn)
+          if key_words_ctx is not None:
+            e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + key_words_features), [2, 3])  # calculate e
+          else:
+            e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features), [2, 3])  # calculate e
 
           # Calculate attention distribution
           attn_dist = masked_attention(e)
@@ -163,14 +185,24 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
       # Calculate p_gen
       if pointer_gen:
         with tf.variable_scope('calculate_pgen'):
-          p_gen = linear([context_vector, state.c, state.h, x], 1, True) # a scalar
+          # TODO... key_words
+          if key_words_ctx is not None:
+            # sigmoid(w_k^t k + w_c^t + w_s_t^t s_t + b_s_w)
+            p_gen = linear([key_words_ctx.c, key_words_ctx.h, context_vector, state.c, state.h, x], 1, True) # a scalar
+          else:
+            # sigmoid(w_c^t + w_s_t^t s_t + b_s_w)
+            p_gen = linear([context_vector, state.c, state.h, x], 1, True)  # a scalar
           p_gen = tf.sigmoid(p_gen)
           p_gens.append(p_gen)
 
       # Concatenate the cell_output (= decoder state) and the context vector, and pass them through a linear layer
       # This is V[s_t, h*_t] + b in the paper
       with variable_scope.variable_scope("AttnOutputProjection"):
-        output = linear([cell_output] + [context_vector], cell.output_size, True)
+        # TODO... key_words
+        if key_words_ctx is not None:
+          output = linear([key_words_ctx.c, key_words_ctx.h] + [cell_output] + [context_vector], cell.output_size, True)
+        else:
+          output = linear([cell_output] + [context_vector], cell.output_size, True)
       outputs.append(output)
 
     # If using coverage, reshape it

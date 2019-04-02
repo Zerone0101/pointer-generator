@@ -44,6 +44,11 @@ class SummarizationModel(object):
       self._enc_batch_extend_vocab = tf.placeholder(tf.int32, [hps.batch_size, None], name='enc_batch_extend_vocab')
       self._max_art_oovs = tf.placeholder(tf.int32, [], name='max_art_oovs')
 
+    if hps.use_key_words:
+      self._enc_key_words_batch = tf.placeholder(tf.int32, [hps.batch_size, None], name='key_words_enc_batch')
+      self._key_words_enc_lens = tf.placeholder(tf.int32, [hps.batch_size], name='key_words_enc_lens')
+
+
     # decoder part
     self._dec_batch = tf.placeholder(tf.int32, [hps.batch_size, hps.max_dec_steps], name='dec_batch')
     self._target_batch = tf.placeholder(tf.int32, [hps.batch_size, hps.max_dec_steps], name='target_batch')
@@ -64,6 +69,11 @@ class SummarizationModel(object):
     feed_dict[self._enc_batch] = batch.enc_batch
     feed_dict[self._enc_lens] = batch.enc_lens
     feed_dict[self._enc_padding_mask] = batch.enc_padding_mask
+
+    if FLAGS.use_key_words:
+      feed_dict[self._enc_key_words_batch] = batch.enc_key_words_batch
+      feed_dict[self._key_words_enc_lens] = batch.enc_key_words_lens
+
     if FLAGS.pointer_gen:
       feed_dict[self._enc_batch_extend_vocab] = batch.enc_batch_extend_vocab
       feed_dict[self._max_art_oovs] = batch.max_art_oovs
@@ -91,6 +101,7 @@ class SummarizationModel(object):
       cell_bw = tf.contrib.rnn.LSTMCell(self._hps.hidden_dim, initializer=self.rand_unif_init, state_is_tuple=True)
       (encoder_outputs, (fw_st, bw_st)) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, encoder_inputs, dtype=tf.float32, sequence_length=seq_len, swap_memory=True)
       encoder_outputs = tf.concat(axis=2, values=encoder_outputs) # concatenate the forwards and backwards states
+
     return encoder_outputs, fw_st, bw_st
 
 
@@ -139,7 +150,8 @@ class SummarizationModel(object):
 
     prev_coverage = self.prev_coverage if hps.mode=="decode" and hps.coverage else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
 
-    outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage)
+    #outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage)
+    outputs, out_state, attn_dists, p_gens, coverage = attention_decoder(inputs, self._enc_key_words_states, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage)
 
     return outputs, out_state, attn_dists, p_gens, coverage
 
@@ -212,9 +224,19 @@ class SummarizationModel(object):
         if hps.mode=="train": self._add_emb_vis(embedding) # add to tensorboard
         emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch) # tensor with shape (batch_size, max_enc_steps, emb_size)
         emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
+        if hps.use_key_words:
+          emb_enc_key_words_inputs = tf.nn.embedding_lookup(embedding, self._enc_key_words_batch)
 
       # Add the encoder.
       enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
+      if hps.use_key_words:
+        with tf.variable_scope('key_words_encoder'):
+          _, key_words_fw_st, key_words_bw_st = self._add_encoder(emb_enc_key_words_inputs, self._key_words_enc_lens)
+        # Our encoder is bidirectional and our decoder is unidirectional
+          self._enc_key_words_states = self._reduce_states(key_words_fw_st, key_words_bw_st)
+      else:
+        self._enc_key_words_states = None
+
       self._enc_states = enc_outputs
 
       # Our encoder is bidirectional and our decoder is unidirectional so we need to reduce the final encoder hidden state to the right size to be the initial decoder hidden state
